@@ -1,0 +1,231 @@
+---
+title: "Hazardous Driving Analysis"
+author: "Brandon Terrizzi, Ph.D."
+date: "12/29/2020"
+output:
+  html_document: default
+---
+
+
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+
+library(tidyverse)
+library(ggmap)
+library(ggrepel) # for geeom_label_repel
+
+
+#citation for ggmap package: 
+# D. Kahle and H. Wickham. ggmap: Spatial Visualization with ggplot2. The R Journal, 5(1), 144-161. URL http://journal.r-project.org/archive/2013-1/kahle-wickham.pdf
+
+
+# google API key: should be stored externally for security
+register_google(key = "")
+
+
+#import data (obtained from: https://www.kaggle.com/terenceshin/hazardous-driving-spots-around-the-world)
+
+data <- read.csv("/Users/brandon/Desktop/data science projects/geospatial analysis/hazardous_driving.csv")
+#omit geohash data for clarity:
+data <- data %>% select(-Geohash, -GeohashBounds)
+
+
+```
+  
+## Background
+
+In this brief, exploratory analysis I investigate locations with high rates of hazardous driving as reported in this particular dataset. 
+
+## Preliminary Analyses: Which countries exhibit the highest frequency of hazardous driving in this data set? 
+```{r}
+countries <- data %>% 
+        group_by(Country) %>% 
+        summarise(n = n()) %>% 
+        arrange(-n) %>% 
+        ungroup() 
+
+ggplot(countries, aes(x = reorder(Country,n), y = n)) + 
+        labs(x = "Country", y = "Frequency") + 
+        geom_col(fill = "steelblue") + 
+        coord_flip() + 
+        theme_minimal()
+```
+  
+  
+The data is overwhelming comprised of info about Mexico so let's focus there.   
+
+
+## Mexico
+  
+Since we are trying to identify which *cities* have the most hazardous driving, we will omit data that is missing city-level information. We will first summarize and visualize hazardous driving at the state-level. Then, we will zoom into the city-level data from there. 
+
+```{r}
+mexicoData <- data %>% filter(Country == "Mexico" & City != "") %>%
+  mutate(State = factor(State), 
+         County = factor(County), 
+         City = factor(City))
+
+# Since the formatting suggestst that this is cumulative data (e.g., multiple entries per state/city), the total number of incidents is likely max value for each state.
+
+# Counter-intuitively, you have group by City first, find the max, then sum max values together to obatin the total numner of incidents for each state. 
+
+stateData <- mexicoData %>% group_by(City) %>%
+  filter(IncidentsTotal == max(IncidentsTotal)) %>% 
+  group_by(State) %>% 
+  summarize(Incidents = sum(IncidentsTotal),
+            SeverityScore = mean(SeverityScore), 
+            Latitude = mean(Latitude), # best we can do for lat
+            Longitude = mean(Longitude)) %>% # best we can do for long
+  ungroup()
+
+```
+
+
+Let's have a look at how the metrics about incident numbers and severity are distributed by state across the entire country of Mexcio. 
+   
+   
+### Incidents and Severity: State-Level Visualization
+
+```{r}
+
+# define lat and lon of mexico
+mexico <- c(lon = -102.5528, lat = 23.6345) # obtained from google search 
+
+# grab map from stamen
+mexicoMap <- get_map(location = mexico,
+                    source = "stamen",
+                    maptype = "toner-lite",
+                    zoom = 5)
+```
+
+```{r, fig.cap= "Labels are applied to states with more than 500 incidents of hazardous driving."}
+
+# plot frequency and severity data over map
+
+ggmap(mexicoMap) + labs(x = "Longitude", y = "Latitude", color = "Severity") + 
+  geom_point(data = stateData, aes(x = Longitude, 
+                                   y = Latitude,
+                                   color = SeverityScore,
+                                   size = Incidents), alpha = .8) +
+  scale_color_gradient(low = "#00FF68", high = "#FF0000", 
+                       limits = c(0,.75), 
+                       breaks = seq(0,.75,by=0.25)) + 
+  guides(size = "none") + 
+  geom_label_repel(data = subset(stateData, Incidents > 500), 
+                   aes(x = Longitude, y = Latitude, label = State), 
+                   size = 3, 
+                   vjust = 0, 
+                   hjust = -0.25)
+
+
+
+
+```
+  
+  
+Veracruz is looking like a mild bumper car ride and Chihuahua is looking like a hot bed of severity. Let's dig in to these states and learn more about what is going on there. 
+
+
+### Foucs on Incidents in the state of Veracruz
+
+```{r}
+
+# filter veracruz data
+
+veracruzData <- filter(mexicoData, State == "Veracruz") %>% 
+  group_by(City) %>%
+  filter(IncidentsTotal == max(IncidentsTotal)) %>% 
+  summarize(Incidents = IncidentsTotal,
+            SeverityScore = mean(SeverityScore), 
+            Latitude = mean(Latitude), # best we can do for lat
+            Longitude = mean(Longitude)) %>% # best we can do for long
+  ungroup()
+
+```
+
+There are many cities in Veracruz. How are incidents distributed across them? 
+
+```{r}
+
+#plot data over map image
+veracruz <- c(lon = -96.1342, lat = 20.1738) #obtained from google search
+veracruzMap <- get_map(location = veracruz,
+                        source = "stamen",
+                        maptype = "toner-hybrid",
+                        zoom = 7)
+
+
+ggmap(veracruzMap) + labs(x = "Longitude", y = "Latitude", color = "Severity") + 
+  geom_point(data = veracruzData, aes(x = Longitude, 
+                                       y = Latitude,
+                                       color = SeverityScore,
+                                       size = Incidents), alpha = .8) +
+  scale_color_gradient(low = "#00FF68", high = "#FF0000", 
+                       limits=c(0,3), 
+                       breaks=seq(0,3,by = .5)) + 
+  guides(size = "none") + 
+  geom_label_repel(data = subset(veracruzData,Incidents > 50),
+                   aes(x = Longitude, y = Latitude, label = City),
+                   color = "black",
+                   segment.alpha = .4,
+                   size = 4, 
+                   nudge_x = 1,
+                   nudge_y = 1.5)
+
+```
+
+Cordoba is the city with both the greatest number of incidents and those with highest severity. 
+
+
+ 
+### Focus on Severity within the State of Chihuaha
+```{r}
+#plot data over map image
+
+chihuahuaData <- filter(mexicoData, State == "Chihuahua") %>% 
+  group_by(City) %>%
+  filter(IncidentsTotal == max(IncidentsTotal)) %>% 
+  summarize(Incidents = IncidentsTotal,
+            SeverityScore = mean(SeverityScore), 
+            Latitude = mean(Latitude), # best we can do for lat
+            Longitude = mean(Longitude)) %>% # best we can do for long
+  ungroup()
+
+chihuahuaData <- chihuahuaData %>% slice_head(n = 4)
+
+
+chihuahua <- c(lon = -106.4245, lat = 31.6904) #obtained from google search
+chihuahuaMap <- get_map(location = chihuahua,
+                        source = "stamen",
+                        maptype = "toner-hybrid",
+                        zoom = 6)
+
+
+ggmap(chihuahuaMap) + labs(x = "Longitude", y = "Latitude", color = "Severity") + 
+  geom_point(data = chihuahuaData, aes(x = Longitude, 
+                                       y = Latitude,
+                                       color = SeverityScore,
+                                       size = Incidents), alpha = .8) +
+  scale_color_gradient(low = "#00FF68", high = "#FF0000", 
+                       limits=c(0,2), 
+                       breaks=seq(0,2,by = .5)) + 
+  guides(size = "none") + 
+  geom_label_repel(data = chihuahuaData, 
+                   aes(x = Longitude, y = Latitude, label = City),
+                   color = "black",
+                   segment.alpha = .4,
+                   size = 4, 
+                   nudge_x = 3,
+                   nudge_y = 1.5)
+
+```
+  
+  
+What is this "Campo 11 1/2" and why is it such a hot bed of hazardous driving activity? Our data do not allow us to explore this specific question, but we will want to make sure to develop interventions in this area.  
+
+
+## Conclusion
+
+The data analyzed here suggest that within Mexico, Cordoba in the state of Veracruz has the highest number of hazardous driving incidents, while the state of Chihuaha exhibits the highest average severity of hazardous driving incidents. It is not clear from this data whether these patterns reflect real-world patterns of hazardous driving, reporting patterns in different countries or regions, or some combination of these factors. 
